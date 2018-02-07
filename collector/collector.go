@@ -2,11 +2,8 @@ package collector
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/csv"
-	"encoding/hex"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -28,11 +25,6 @@ type Exporter struct {
 	namespace string
 }
 
-var rawSensors = [][]string{
-	{"InputPowerPSU1", " raw 0x06 0x52 0x07 0x78 0x01 0x97", "W", "enabled"},
-	{"InputPowerPSU2", " raw 0x06 0x52 0x07 0x7a 0x01 0x97", "W", "enabled"},
-}
-
 // NewExporter instantiates a new ipmi Exporter.
 func NewExporter(ipmiBinary string) *Exporter {
 	return &Exporter{
@@ -50,18 +42,9 @@ func ipmiOutput(cmd string) ([]byte, error) {
 	return out, err
 }
 
-func convertValue(strfloat string, strunit string) (value float64, err error) {
-	if strfloat != "na" {
-		if strunit == "discrete" {
-			strfloat = strings.Replace(strfloat, "0x", "", -1)
-			parsedValue, err := strconv.ParseUint(strfloat, 16, 32)
-			if err != nil {
-				log.Errorf("could not translate hex: %v, %v", parsedValue, err)
-			}
-			value = float64(parsedValue)
-		} else {
-			value, err = strconv.ParseFloat(strfloat, 64)
-		}
+func convertValue(strfloat string) (value float64, err error) {
+	if strfloat != "N/A" {
+		value, err = strconv.ParseFloat(strfloat, 64)
 	}
 	return value, err
 }
@@ -74,37 +57,14 @@ func convertOutput(result [][]string) (metrics []metric, err error) {
 		for n := range res {
 			res[n] = strings.TrimSpace(res[n])
 		}
-		value, err = convertValue(res[1], res[2])
+		value, err = convertValue(res[3])
 		if err != nil {
 			log.Errorf("could not parse ipmi output: %s", err)
 		}
 
 		currentMetric.value = value
-		currentMetric.unit = res[2]
-		currentMetric.metricsname = res[0]
-
-		metrics = append(metrics, currentMetric)
-	}
-	return metrics, err
-}
-
-// Convert raw IPMI tool output to decimal numbers
-func convertRawOutput(result [][]string) (metrics []metric, err error) {
-	for _, res := range result {
-		var value []byte
-		var currentMetric metric
-
-		for n := range res {
-			res[n] = strings.TrimSpace(res[n])
-		}
-		value, err := hex.DecodeString(res[1])
-		if err != nil {
-			log.Errorf("could not parse ipmi output: %s", err)
-		}
-		r, _ := binary.Uvarint(value)
-		currentMetric.value = float64(r)
-		currentMetric.unit = res[2]
-		currentMetric.metricsname = res[0]
+		currentMetric.unit = res[4]
+		currentMetric.metricsname = res[1]
 
 		metrics = append(metrics, currentMetric)
 	}
@@ -148,7 +108,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect collects all the registered stats metrics from the ipmi node.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
-	output, err := ipmiOutput(e.IPMIBinary + " sensor")
+	output, err := ipmiOutput("ipmi-sensors -Q --sdr-cache-recreate --no-header-output")
 	if err != nil {
 		log.Errorln(err)
 	}
@@ -161,60 +121,22 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 		log.Errorln(err)
 	}
 
-	psRegex := regexp.MustCompile("PS(.*) Status")
-
 	for _, res := range convertedOutput {
 		push := func(m *prometheus.Desc) {
 			ch <- prometheus.MustNewConstMetric(m, prometheus.GaugeValue, res.value, res.metricsname)
 		}
+
 		switch strings.ToLower(res.unit) {
-		case "degrees c":
+		case "c":
 			push(temperatures)
-		case "volts":
+		case "v":
 			push(voltages)
 		case "rpm":
 			push(fanspeed)
-		case "watts":
+		case "w":
 			push(powersupply)
-		case "amps":
+		case "a":
 			push(current)
 		}
-
-		if matches := psRegex.MatchString(res.metricsname); matches {
-			push(powersupply)
-		} else if strings.HasSuffix(res.metricsname, "Chassis Intru") {
-			ch <- prometheus.MustNewConstMetric(intrusion, prometheus.GaugeValue, res.value)
-		}
-	}
-
-	e.collectRaws(ch)
-}
-
-// Collect some Supermicro X8-specific metrics with raw commands
-func (e *Exporter) collectRaws(ch chan<- prometheus.Metric) {
-	results := [][]string{}
-	for i, command := range rawSensors {
-		if command[3] == "enabled" {
-			output, err := ipmiOutput(e.IPMIBinary + command[1])
-			if err != nil {
-				log.Infof("Error detected on quering %v. Disabling this sensor.", command[1])
-				rawSensors[i][3] = "disabled"
-				log.Errorln(err)
-				continue
-			}
-
-			results = append(results, []string{command[0], string(output), command[2]})
-		}
-	}
-
-	convertedRawOutput, err := convertRawOutput(results)
-	if err != nil {
-		log.Errorln(err)
-	}
-	for _, res := range convertedRawOutput {
-		push := func(m *prometheus.Desc) {
-			ch <- prometheus.MustNewConstMetric(m, prometheus.GaugeValue, res.value, res.metricsname)
-		}
-		push(powersupply)
 	}
 }
