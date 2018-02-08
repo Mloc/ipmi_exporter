@@ -84,10 +84,10 @@ func splitOutput(impiOutput []byte) ([][]string, error) {
 	keys := make(map[string]int)
 	var res [][]string
 	for _, v := range result {
-		key := v[0]
+		key := v[1]
 		if _, ok := keys[key]; ok {
 			keys[key] += 1
-			v[0] = strings.TrimSpace(v[0]) + strconv.Itoa(keys[key])
+			v[1] = strings.TrimSpace(v[1]) + strconv.Itoa(keys[key])
 		} else {
 			keys[key] = 1
 		}
