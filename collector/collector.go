@@ -57,6 +57,9 @@ func convertOutput(result [][]string) (metrics []metric, err error) {
 		for n := range res {
 			res[n] = strings.TrimSpace(res[n])
 		}
+		if res[3] == "N/A" {
+			continue
+		}
 		value, err = convertValue(res[3])
 		if err != nil {
 			log.Errorf("could not parse ipmi output: %s", err)
